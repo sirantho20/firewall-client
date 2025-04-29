@@ -158,7 +158,21 @@ class FirewallManager:
     # ------------------------- FAIL2BAN METHODS -------------------------
 
     def f2b_list_jails(self):
-        return self._run("sudo fail2ban-client status")
+        """List all available Fail2Ban jails."""
+        jail_dir = "/etc/fail2ban/jail.d"
+        try:
+            if not os.path.exists(jail_dir):
+                return {"success": False, "output": f"Jail directory {jail_dir} not found"}
+            
+            jails = []
+            for filename in os.listdir(jail_dir):
+                if filename.endswith('.local'):
+                    jail_name = filename[:-6]  # Remove .local extension
+                    jails.append(jail_name)
+            
+            return {"success": True, "jails": jails}
+        except Exception as e:
+            return {"success": False, "output": str(e)}
 
     def f2b_jail_status(self, jail):
         return self._run(f"sudo fail2ban-client status {jail}")
@@ -194,17 +208,68 @@ action = {action}
         except Exception as e:
             return {"success": False, "output": str(e)}
 
-    def f2b_create_filter(self, filter_name, failregex, ignoreregex=""):
-        filter_file = f"/etc/fail2ban/filter.d/{filter_name}.conf"
-        content = f"""[Definition]
-failregex = {failregex}
-ignoreregex = {ignoreregex}
-"""
+    def f2b_create_filter(self, filter_name, content):
+        """Create a new Fail2Ban filter."""
+        filter_path = f"/etc/fail2ban/filter.d/{filter_name}.conf"
         try:
-            with open(filter_file, 'w') as f:
+            if os.path.exists(filter_path):
+                return {"success": False, "output": f"Filter {filter_name} already exists"}
+            
+            # Validate the content has required sections
+            if "[Definition]" not in content:
+                return {"success": False, "output": "Filter content must contain [Definition] section"}
+            
+            # Write the new content
+            with open(filter_path, 'w') as f:
                 f.write(content)
-            return {"success": True, "output": f"Filter '{filter_name}' created."}
+            
+            # Validate the new filter
+            validation_result = self.f2b_validate_filter("", "", "")
+            if not validation_result["success"]:
+                # Remove the file if validation fails
+                os.remove(filter_path)
+                return {"success": False, "output": f"Filter validation failed: {validation_result['output']}"}
+            
+            return {"success": True, "output": f"Filter {filter_name} created successfully"}
         except Exception as e:
+            # Clean up if any error occurs
+            if os.path.exists(filter_path):
+                os.remove(filter_path)
+            return {"success": False, "output": str(e)}
+
+    def f2b_delete_filter(self, filter_name):
+        """Delete a Fail2Ban filter."""
+        filter_path = f"/etc/fail2ban/filter.d/{filter_name}.conf"
+        try:
+            if not os.path.exists(filter_path):
+                return {"success": False, "output": f"Filter {filter_name} not found"}
+            
+            # Create a backup before deletion
+            backup_path = f"{filter_path}.bak"
+            shutil.copy2(filter_path, backup_path)
+            
+            # Delete the filter
+            os.remove(filter_path)
+            
+            # Check if any jails are using this filter
+            jail_dir = "/etc/fail2ban/jail.d"
+            if os.path.exists(jail_dir):
+                for jail_file in os.listdir(jail_dir):
+                    if jail_file.endswith('.local'):
+                        with open(os.path.join(jail_dir, jail_file), 'r') as f:
+                            content = f.read()
+                            if f"filter = {filter_name}" in content:
+                                # Restore the filter if it's being used
+                                shutil.move(backup_path, filter_path)
+                                return {"success": False, "output": f"Cannot delete filter {filter_name} as it is being used by one or more jails"}
+            
+            # Remove backup if everything is successful
+            os.remove(backup_path)
+            return {"success": True, "output": f"Filter {filter_name} deleted successfully"}
+        except Exception as e:
+            # Restore from backup if any error occurs
+            if os.path.exists(backup_path):
+                shutil.move(backup_path, filter_path)
             return {"success": False, "output": str(e)}
 
     def f2b_validate_filter(self, log_sample, failregex, ignoreregex=""):
@@ -224,6 +289,151 @@ ignoreregex = {ignoreregex}
             return {"success": False, "output": e.output}
         except Exception as ex:
             return {"success": False, "output": str(ex)}
+
+    def f2b_list_filters(self):
+        """List all available Fail2Ban filters."""
+        filter_dir = "/etc/fail2ban/filter.d"
+        try:
+            if not os.path.exists(filter_dir):
+                return {"success": False, "output": f"Filter directory {filter_dir} not found"}
+            
+            filters = []
+            for filename in os.listdir(filter_dir):
+                if filename.endswith('.conf'):
+                    filter_name = filename[:-5]  # Remove .conf extension
+                    filters.append(filter_name)
+            
+            return {"success": True, "filters": filters}
+        except Exception as e:
+            return {"success": False, "output": str(e)}
+
+    def f2b_read_filter(self, filter_name):
+        """Read the contents of a specific Fail2Ban filter."""
+        filter_path = f"/etc/fail2ban/filter.d/{filter_name}.conf"
+        try:
+            if not os.path.exists(filter_path):
+                return {"success": False, "output": f"Filter {filter_name} not found"}
+            
+            with open(filter_path, 'r') as f:
+                content = f.read()
+            
+            return {"success": True, "content": content}
+        except Exception as e:
+            return {"success": False, "output": str(e)}
+
+    def f2b_update_filter(self, filter_name, content):
+        """Update the contents of a specific Fail2Ban filter."""
+        filter_path = f"/etc/fail2ban/filter.d/{filter_name}.conf"
+        try:
+            if not os.path.exists(filter_path):
+                return {"success": False, "output": f"Filter {filter_name} not found"}
+            
+            # Validate the content has required sections
+            if "[Definition]" not in content:
+                return {"success": False, "output": "Filter content must contain [Definition] section"}
+            
+            # Create a backup of the original file
+            backup_path = f"{filter_path}.bak"
+            shutil.copy2(filter_path, backup_path)
+            
+            # Write the new content
+            with open(filter_path, 'w') as f:
+                f.write(content)
+            
+            # Validate the new filter
+            validation_result = self.f2b_validate_filter("", "", "")
+            if not validation_result["success"]:
+                # Restore from backup if validation fails
+                shutil.move(backup_path, filter_path)
+                return {"success": False, "output": f"Filter validation failed: {validation_result['output']}"}
+            
+            # Remove backup if everything is successful
+            os.remove(backup_path)
+            return {"success": True, "output": f"Filter {filter_name} updated successfully"}
+        except Exception as e:
+            # Restore from backup if any error occurs
+            if os.path.exists(backup_path):
+                shutil.move(backup_path, filter_path)
+            return {"success": False, "output": str(e)}
+
+    def f2b_read_jail(self, jail_name):
+        """Read the contents of a specific Fail2Ban jail."""
+        jail_path = f"/etc/fail2ban/jail.d/{jail_name}.local"
+        try:
+            if not os.path.exists(jail_path):
+                return {"success": False, "output": f"Jail {jail_name} not found"}
+            
+            with open(jail_path, 'r') as f:
+                content = f.read()
+            
+            return {"success": True, "content": content}
+        except Exception as e:
+            return {"success": False, "output": str(e)}
+
+    def f2b_update_jail(self, jail_name, content):
+        """Update the contents of a specific Fail2Ban jail."""
+        jail_path = f"/etc/fail2ban/jail.d/{jail_name}.local"
+        try:
+            if not os.path.exists(jail_path):
+                return {"success": False, "output": f"Jail {jail_name} not found"}
+            
+            # Validate the content has required sections
+            if f"[{jail_name}]" not in content:
+                return {"success": False, "output": f"Jail content must contain [{jail_name}] section"}
+            
+            # Create a backup of the original file
+            backup_path = f"{jail_path}.bak"
+            shutil.copy2(jail_path, backup_path)
+            
+            # Write the new content
+            with open(jail_path, 'w') as f:
+                f.write(content)
+            
+            # Reload fail2ban to apply changes
+            reload_result = self.f2b_reload()
+            if not reload_result["success"]:
+                # Restore from backup if reload fails
+                shutil.move(backup_path, jail_path)
+                return {"success": False, "output": f"Failed to reload fail2ban: {reload_result['output']}"}
+            
+            # Remove backup if everything is successful
+            os.remove(backup_path)
+            return {"success": True, "output": f"Jail {jail_name} updated successfully"}
+        except Exception as e:
+            # Restore from backup if any error occurs
+            if os.path.exists(backup_path):
+                shutil.move(backup_path, jail_path)
+            return {"success": False, "output": str(e)}
+
+    def f2b_delete_jail(self, jail_name):
+        """Delete a Fail2Ban jail."""
+        jail_path = f"/etc/fail2ban/jail.d/{jail_name}.local"
+        try:
+            if not os.path.exists(jail_path):
+                return {"success": False, "output": f"Jail {jail_name} not found"}
+            
+            # Create a backup before deletion
+            backup_path = f"{jail_path}.bak"
+            shutil.copy2(jail_path, backup_path)
+            
+            # Delete the jail
+            os.remove(jail_path)
+            
+            # Reload fail2ban to apply changes
+            reload_result = self.f2b_reload()
+            if not reload_result["success"]:
+                # Restore from backup if reload fails
+                shutil.move(backup_path, jail_path)
+                return {"success": False, "output": f"Failed to reload fail2ban: {reload_result['output']}"}
+            
+            # Remove backup if everything is successful
+            os.remove(backup_path)
+            return {"success": True, "output": f"Jail {jail_name} deleted successfully"}
+        except Exception as e:
+            # Restore from backup if any error occurs
+            if os.path.exists(backup_path):
+                shutil.move(backup_path, jail_path)
+            return {"success": False, "output": str(e)}
 
 manager = FirewallManager()
 
@@ -299,13 +509,57 @@ def f2b_create_jail():
 @require_auth
 def f2b_create_filter():
     data = request.json
-    return jsonify(manager.f2b_create_filter(data["filter_name"], data["failregex"], data.get("ignoreregex", "")))
+    if not data or 'filter_name' not in data or 'content' not in data:
+        return jsonify({"success": False, "output": "Missing filter_name or content in request"}), 400
+    return jsonify(manager.f2b_create_filter(data['filter_name'], data['content']))
 
 @app.route('/api/f2b/validate-filter', methods=['POST'])
 @require_auth
 def f2b_validate_filter():
     data = request.json
     return jsonify(manager.f2b_validate_filter(data["log_sample"], data["failregex"], data.get("ignoreregex", "")))
+
+@app.route('/api/f2b/filters', methods=['GET'])
+@require_auth
+def f2b_list_filters():
+    return jsonify(manager.f2b_list_filters())
+
+@app.route('/api/f2b/filters/<filter_name>', methods=['GET'])
+@require_auth
+def f2b_read_filter(filter_name):
+    return jsonify(manager.f2b_read_filter(filter_name))
+
+@app.route('/api/f2b/filters/<filter_name>', methods=['PUT'])
+@require_auth
+def f2b_update_filter(filter_name):
+    data = request.json
+    if not data or 'content' not in data:
+        return jsonify({"success": False, "output": "Missing filter content in request"}), 400
+    return jsonify(manager.f2b_update_filter(filter_name, data['content']))
+
+@app.route('/api/f2b/filters/<filter_name>', methods=['DELETE'])
+@require_auth
+def f2b_delete_filter(filter_name):
+    return jsonify(manager.f2b_delete_filter(filter_name))
+
+# Jail CRUD endpoints
+@app.route('/api/f2b/jails/<jail_name>', methods=['GET'])
+@require_auth
+def f2b_read_jail(jail_name):
+    return jsonify(manager.f2b_read_jail(jail_name))
+
+@app.route('/api/f2b/jails/<jail_name>', methods=['PUT'])
+@require_auth
+def f2b_update_jail(jail_name):
+    data = request.json
+    if not data or 'content' not in data:
+        return jsonify({"success": False, "output": "Missing jail content in request"}), 400
+    return jsonify(manager.f2b_update_jail(jail_name, data['content']))
+
+@app.route('/api/f2b/jails/<jail_name>', methods=['DELETE'])
+@require_auth
+def f2b_delete_jail(jail_name):
+    return jsonify(manager.f2b_delete_jail(jail_name))
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5005)
