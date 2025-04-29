@@ -1,4 +1,3 @@
-
 import subprocess
 import shutil
 import re
@@ -8,7 +7,7 @@ from flask import Flask, request, jsonify
 from functools import wraps
 
 # ========================== Security Config ==========================
-API_KEY = "your-secure-token"
+API_KEY = "tony123"
 
 # ========================== Flask App ==========================
 app = Flask(__name__)
@@ -34,6 +33,7 @@ class FirewallManager:
 
     def _run(self, command):
         try:
+            print(str(command))
             result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, text=True)
             return {"success": True, "output": result.strip()}
         except subprocess.CalledProcessError as e:
@@ -44,32 +44,107 @@ class FirewallManager:
     def ufw_status(self):
         if not self.ufw_installed:
             return {"success": False, "output": "UFW not installed. Install with sudo apt install ufw"}
-        result = self._run(f"{self.ufw_command} status numbered")
-        if result["success"]:
-            return self._parse_ufw_rules(result["output"])
-        return result
-
-    def _parse_ufw_rules(self, raw_output):
-        lines = raw_output.splitlines()
+        
+        # First get the status to check if UFW is active
+        status_result = self._run(f"{self.ufw_command} status")
+        if not status_result["success"]:
+            return status_result
+            
+        # Then get the numbered rules
+        rules_result = self._run(f"{self.ufw_command} status")
+        if not rules_result["success"]:
+            return rules_result
+            
+        # Parse the status
+        status = "inactive"
+        if "Status: active" in status_result["output"]:
+            status = "active"
+            
+        # Parse the rules
         rules = []
+        rule_number = 1
+        
+        # Skip the header lines
+        lines = [line for line in rules_result["output"].splitlines() 
+                if line and not line.startswith(('To', '--'))]
+                
         for line in lines:
-            match = re.match(r'\[(\d+)\]\s+(.+?)\s+(ALLOW|DENY)\s+(IN|OUT)\s+(.+)', line)
-            if match:
+            print(f"\nProcessing line: {line}")  # Debug print
+            
+            # Split the line into components
+            parts = line.split()
+            print(f"Parts: {parts}")  # Debug print
+            
+            if len(parts) < 3:
+                continue
+                
+            # Check for IPv6 - look for (v6) anywhere in the line
+            is_ipv6 = "(v6)" in line
+            print(f"Is IPv6: {is_ipv6}")  # Debug print
+            
+            # Extract port and protocol, handling IPv6 format
+            port_proto = parts[0].replace("(v6)", "").strip()
+            if '/' in port_proto:
+                port, protocol = port_proto.split('/')
+            else:
+                port = port_proto
+                protocol = "tcp"  # Default protocol
+                
+            # Extract action (it's always the second part)
+            action = parts[1]
+            
+            # Extract IP/network (it's always the third part)
+            ip = parts[2].replace("(v6)", "").strip() if parts[2] != "Anywhere" else None
+            
+            # Only add the rule if we have valid components
+            if port and action in ["ALLOW", "DENY"]:
                 rules.append({
-                    "number": int(match.group(1)),
-                    "rule": match.group(2).strip(),
-                    "action": match.group(3),
-                    "direction": match.group(4),
-                    "from_to": match.group(5).strip(),
+                    "number": rule_number,
+                    "action": action,
+                    "direction": "IN",  # Default direction
+                    "ip": ip,
+                    "port": port,
+                    "protocol": protocol,
+                    "interface": None,  # Interface not shown in this format
+                    "ipv6": is_ipv6
                 })
-        return {"success": True, "rules": rules}
+                rule_number += 1
+                
+        return {
+            "success": True,
+            "status": status,
+            "rules": rules
+        }
 
-    def ufw_add_rule(self, action, port, proto="tcp", direction="in", ip=None):
+    def ufw_add_rule(self, action, port, proto="tcp", direction="in", ip=None, interface=None):
         if ip:
-            cmd = f"{self.ufw_command} {action} from {ip} to any port {port} proto {proto}"
+            action = action.lower()
+            if interface:
+                cmd = f"{self.ufw_command} {action} from {ip} to any port {port} proto {proto} on {interface}"
+            else:
+                cmd = f"{self.ufw_command} {action} from {ip} to any port {port} proto {proto}"
         else:
-            cmd = f"{self.ufw_command} {action} {port}/{proto} {direction}"
-        return self._run(cmd)
+            if interface:
+                cmd = f"{self.ufw_command} {action} {port}/{proto} {direction} on {interface}"
+            else:
+                cmd = f"{self.ufw_command} {action} {port}/{proto} {direction}"
+        
+        result = self._run(cmd)
+        if not result["success"]:
+            return result
+            
+        # Return structured response
+        return {
+            "success": True,
+            "rule": {
+                "action": action.upper(),
+                "direction": direction,
+                "interface": interface,
+                "ip": ip,
+                "port": str(port),
+                "protocol": proto
+            }
+        }
 
     def ufw_delete_rule(self, rule_number):
         return self._run(f"echo y | {self.ufw_command} delete {rule_number}")
@@ -160,28 +235,28 @@ manager = FirewallManager()
 def ufw_status():
     return jsonify(manager.ufw_status())
 
-@app.route('/api/ufw/rule', methods=['POST'])
+@app.route('/api/ufw/add', methods=['POST'])
 @require_auth
 def ufw_add_rule():
     data = request.json
     return jsonify(manager.ufw_add_rule(data["action"], data["port"], data.get("proto", "tcp"),
-                                        data.get("direction", "in"), data.get("ip", None)))
+                                        data.get("direction", "in"), data.get("ip", None), data.get("interface", None)))
 
-@app.route('/api/ufw/delete', methods=['POST'])
+@app.route('/api/ufw/delete', methods=['DELETE'])
 @require_auth
 def ufw_delete_rule():
     data = request.json
     return jsonify(manager.ufw_delete_rule(data["rule_number"]))
 
-@app.route('/api/ufw/enable', methods=['POST'])
-@require_auth
-def ufw_enable():
-    return jsonify(manager.ufw_enable())
+# @app.route('/api/ufw/enable', methods=['POST'])
+# @require_auth
+# def ufw_enable():
+#     return jsonify(manager.ufw_enable())
 
-@app.route('/api/ufw/disable', methods=['POST'])
-@require_auth
-def ufw_disable():
-    return jsonify(manager.ufw_disable())
+# @app.route('/api/ufw/disable', methods=['POST'])
+# @require_auth
+# def ufw_disable():
+#     return jsonify(manager.ufw_disable())
 
 # -------- Fail2Ban
 @app.route('/api/f2b/jails', methods=['GET'])
