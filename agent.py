@@ -5,6 +5,7 @@ import os
 import tempfile
 from flask import Flask, request, jsonify
 from functools import wraps
+from datetime import datetime
 
 # ========================== Security Config ==========================
 API_KEY = "tony123"
@@ -33,10 +34,16 @@ class FirewallManager:
 
     def _run(self, command):
         try:
-            print(str(command))
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            client_ip = request.remote_addr
+            print(f"[{timestamp}] IP: {client_ip} - Command: {command}")
             result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, text=True)
+            print(f"[{timestamp}] IP: {client_ip} - Command: {command} - Output: {result.strip()}")
             return {"success": True, "output": result.strip()}
         except subprocess.CalledProcessError as e:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            client_ip = request.remote_addr
+            print(f"[{timestamp}] IP: {client_ip} - Command: {command} - Error: {e.output.strip()}")
             return {"success": False, "output": e.output.strip()}
 
     # ------------------------- UFW METHODS -------------------------
@@ -73,14 +80,12 @@ class FirewallManager:
             
             # Split the line into components
             parts = line.split()
-            print(f"Parts: {parts}")  # Debug print
             
             if len(parts) < 3:
                 continue
                 
             # Check for IPv6 - look for (v6) anywhere in the line
             is_ipv6 = "(v6)" in line
-            print(f"Is IPv6: {is_ipv6}")  # Debug print
             
             # Extract port and protocol, handling IPv6 format
             port_proto = parts[0].replace("(v6)", "").strip()
